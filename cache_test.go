@@ -3,6 +3,7 @@ package gocake
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/dgraph-io/ristretto"
 )
@@ -40,17 +41,29 @@ func BenchmarkGocake(b *testing.B) {
 
 	b.Run("Set", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			_ = cache.Set(toKey(i), toKey(i))
+			cache.Set(toKey(i), toKey(i))
 		}
 	})
 
 	b.Run("Get", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			value, ok := cache.Get(toKey(i))
-			if ok != nil {
+			value := cache.Get(toKey(i))
+			if value != nil {
 				_ = value
 			}
 		}
 	})
+}
 
+func TestExpire(t *testing.T) {
+	cache := NewCache(10, nil)
+	cache.SetWithTTL(toKey(2), toKey(2), time.Millisecond)
+	t.Run(
+		"expire", func(t *testing.T) {
+			time.Sleep(2 * time.Millisecond)
+			if cache.Get(toKey(2)) != nil {
+				t.Error("Expire failed")
+			}
+		},
+	)
 }

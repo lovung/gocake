@@ -11,14 +11,14 @@ import (
 type lfu struct {
 	lock sync.Mutex
 
-	// Linked list of the counter values.
+	// Linked list of the freqNode values.
 	counterList *list.List // list.Element.Value is freqNode
 
 	keyMap map[uint64]*list.Element // list.Element.Value is freqNode
 }
 
 type freqNode struct {
-	// The number of times this counter has been accessed.
+	// The number of times this freqNode has been accessed.
 	value uint64
 
 	keys map[uint64]struct{}
@@ -52,7 +52,7 @@ func (l *lfu) newItem(key uint64) *list.Element {
 	defer l.lock.Unlock()
 	firstNode := l.counterList.Front()
 	if firstNode == nil {
-		// Create a new counter.
+		// Create a new freqNode.
 		node := &freqNode{
 			value: 1,
 			keys:  map[uint64]struct{}{key: {}},
@@ -62,12 +62,12 @@ func (l *lfu) newItem(key uint64) *list.Element {
 		return e
 	}
 	if firstNode.Value.(*freqNode).value == 1 {
-		// The first counter is the only one with this value.
+		// The first freqNode is the only one with this value.
 		firstNode.Value.(*freqNode).keys[key] = struct{}{}
 		l.keyMap[key] = firstNode
 		return firstNode
 	}
-	// Create a new counter.
+	// Create a new freqNode.
 	node := &freqNode{
 		value: 1,
 		keys:  map[uint64]struct{}{key: {}},
@@ -87,14 +87,14 @@ func (l *lfu) touch(key uint64) *list.Element {
 	defer l.lock.Unlock()
 	node := e.Value.(*freqNode)
 	if len(node.keys) == 1 {
-		// Increase the counter.
+		// Increase the freqNode.
 		node.value++
 		return e
 	}
 	delete(node.keys, key)
 	nextNode := e.Next()
 	if nextNode == nil {
-		// Create a new counter.
+		// Create a new freqNode.
 		newNode := &freqNode{
 			value: node.value + 1,
 			keys:  map[uint64]struct{}{key: {}},
@@ -108,7 +108,7 @@ func (l *lfu) touch(key uint64) *list.Element {
 		l.keyMap[key] = nextNode
 		return nextNode
 	}
-	// Create a new counter.
+	// Create a new freqNode.
 	newNode := &freqNode{
 		value: node.value + 1,
 		keys:  map[uint64]struct{}{key: {}},
@@ -135,14 +135,31 @@ func (l *lfu) clean(quantity int) []uint64 {
 			i++
 			if i == quantity {
 				if len(node.Value.(*freqNode).keys) == 0 {
-					// Remove the counter.
+					// Remove the freqNode.
 					l.counterList.Remove(node)
 				}
 				return keys
 			}
 		}
-		// Remove the counter.
+		// Remove the freqNode.
 		l.counterList.Remove(node)
 	}
 	return keys
+}
+
+// del a key in lfu
+func (l *lfu) del(key uint64) {
+	l.lock.Lock()
+	defer l.lock.Unlock()
+	e := l.keyMap[key]
+	if e == nil {
+		return
+	}
+	node := e.Value.(*freqNode)
+	delete(node.keys, key)
+	if len(node.keys) == 0 {
+		// Remove the freqNode.
+		l.counterList.Remove(e)
+	}
+	delete(l.keyMap, key)
 }
