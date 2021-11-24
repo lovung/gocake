@@ -5,6 +5,10 @@ import (
 	"time"
 )
 
+// Assume 1 item ~ 1KB
+// maxStoreCount = 100MB / 1KB = 100,000
+const maxStoreCount = 10000
+
 // store saves the cache data
 type store struct {
 	lock  sync.RWMutex
@@ -35,6 +39,7 @@ func (s *store) get(key uint64) (interface{}, bool) {
 	}
 	if item.expiredAt > 0 && item.expiredAt < time.Now().UnixNano() {
 		s.lfu.del(key)
+		s.count--
 		delete(s.data, key)
 		return nil, false
 	}
@@ -45,7 +50,6 @@ func (s *store) get(key uint64) (interface{}, bool) {
 func (s *store) set(key uint64, value interface{}, ttl time.Duration) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	s.lfu.touch(key)
 	item, ok := s.data[key]
 	var expiredAt int64
 	if ttl != 0 {
@@ -53,6 +57,16 @@ func (s *store) set(key uint64, value interface{}, ttl time.Duration) {
 	}
 	if !ok {
 		// not exist
+		if s.count > maxStoreCount {
+			// use LFU to evict item
+			delKeys := s.lfu.clean(1)
+			for _, key := range delKeys {
+				delete(s.data, key)
+				s.count--
+			}
+		}
+		s.count++
+		s.lfu.touch(key)
 		s.data[key] = storeItem{
 			value:     value,
 			expiredAt: expiredAt,
@@ -60,6 +74,7 @@ func (s *store) set(key uint64, value interface{}, ttl time.Duration) {
 		return
 	}
 	// already expired: don't need to remove freq of this key
+	s.lfu.touch(key)
 	item.value = value
 	item.expiredAt = expiredAt
 
@@ -69,8 +84,11 @@ func (s *store) del(key uint64) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	// TODO: improve GC overhead for this operation
-	s.lfu.del(key)
-	delete(s.data, key)
+	if _, ok := s.data[key]; ok {
+		s.lfu.del(key)
+		s.count--
+		delete(s.data, key)
+	}
 }
 
 func (s *store) clear() {
@@ -79,6 +97,7 @@ func (s *store) clear() {
 	// TODO: improve GC overhead for this operation
 	for k := range s.data {
 		s.lfu.del(k)
+		s.count--
 		delete(s.data, k)
 	}
 	s.data = make(map[uint64]storeItem)
@@ -97,6 +116,7 @@ func (s *store) getMany(mapItems map[uint64]interface{}) {
 		}
 		if item.expiredAt > 0 && item.expiredAt < now {
 			s.lfu.del(key)
+			s.count--
 			mapItems[key] = nil
 			continue
 		}
