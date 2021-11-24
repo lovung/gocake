@@ -3,9 +3,10 @@ Golang in-memory cache library
 
 ## How it work
 - [x] Sharding the hashed key for each stores.
-- [ ] Using LFU for eviction policy.
+- [x] Using LFU for eviction policy.
 - [x] Thread safe.
 - [x] Handle expired async.
+- [ ] Handle set a pointer as value.
 
 ## Future
 - [ ] Don't use the builtin `map` from Golang to avoid out of memory issue.

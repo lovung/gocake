@@ -50,11 +50,11 @@ func (s *store) get(key uint64) (interface{}, bool) {
 func (s *store) set(key uint64, value interface{}, ttl time.Duration) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	item, ok := s.data[key]
 	var expiredAt int64
 	if ttl != 0 {
 		expiredAt = time.Now().Add(ttl).UnixNano()
 	}
+	item, ok := s.data[key]
 	if !ok {
 		// not exist
 		if s.count > maxStoreCount {
@@ -73,11 +73,13 @@ func (s *store) set(key uint64, value interface{}, ttl time.Duration) {
 		}
 		return
 	}
-	// already expired: don't need to remove freq of this key
+	if item.expiredAt > 0 && item.expiredAt < time.Now().UnixNano() {
+		// already expired: reset the freq count
+		s.lfu.del(key)
+	}
 	s.lfu.touch(key)
 	item.value = value
 	item.expiredAt = expiredAt
-
 }
 
 func (s *store) del(key uint64) {
@@ -103,14 +105,14 @@ func (s *store) clear() {
 	s.data = make(map[uint64]storeItem)
 }
 
+// Not be used
 func (s *store) getMany(mapItems map[uint64]interface{}) {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 	now := time.Now().Unix()
 	for key := range mapItems {
-		var item storeItem
-		var ok bool
-		if item, ok = s.data[key]; !ok {
+		item, ok := s.data[key]
+		if !ok {
 			mapItems[key] = nil
 			continue
 		}
@@ -125,13 +127,40 @@ func (s *store) getMany(mapItems map[uint64]interface{}) {
 	}
 }
 
-// func (s *store) setMany(mapItems map[uint64]interface{}) {
-// 	s.lock.Lock()
-// 	defer s.lock.Unlock()
-// 	for key, value := range mapItems {
-// 		s.data[key] = storeItem{
-// 			value:     value,
-// 			expiredAt: 0,
-// 		}
-// 	}
-// }
+func (s *store) setMany(mapItems map[uint64]interface{}, ttl time.Duration) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	var expiredAt int64
+	if ttl != 0 {
+		expiredAt = time.Now().Add(ttl).UnixNano()
+	}
+	for key, value := range mapItems {
+		item, ok := s.data[key]
+		if !ok {
+			s.count++
+			s.data[key] = storeItem{
+				value:     value,
+				expiredAt: expiredAt,
+			}
+			return
+		}
+		if item.expiredAt > 0 && item.expiredAt < time.Now().UnixNano() {
+			// already expired: reset the freq count
+			s.lfu.del(key)
+		}
+		item.value = value
+		item.expiredAt = expiredAt
+	}
+
+	if overSize := s.count - maxStoreCount; overSize > 0 {
+		// use LFU to evict items
+		delKeys := s.lfu.clean(overSize)
+		for _, key := range delKeys {
+			delete(s.data, key)
+			s.count--
+		}
+	}
+	for key := range mapItems {
+		s.lfu.touch(key)
+	}
+}
