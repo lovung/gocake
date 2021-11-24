@@ -7,9 +7,10 @@ import (
 
 // store saves the cache data
 type store struct {
-	lock       sync.RWMutex
-	data       map[uint64]storeItem
-	expireChan chan uint64
+	lock  sync.RWMutex
+	data  map[uint64]storeItem
+	count int
+	lfu   *lfu
 }
 
 type storeItem struct {
@@ -17,11 +18,11 @@ type storeItem struct {
 	expiredAt int64
 }
 
-func newStore(expireChan chan uint64) *store {
+func newStore() *store {
 	return &store{
-		lock:       sync.RWMutex{},
-		data:       make(map[uint64]storeItem),
-		expireChan: expireChan,
+		lock: sync.RWMutex{},
+		data: make(map[uint64]storeItem),
+		lfu:  newLFU(),
 	}
 }
 
@@ -29,17 +30,22 @@ func (s *store) get(key uint64) (interface{}, bool) {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 	item, ok := s.data[key]
+	if !ok {
+		return nil, false
+	}
 	if item.expiredAt > 0 && item.expiredAt < time.Now().UnixNano() {
-		s.expireChan <- key
+		s.lfu.del(key)
 		delete(s.data, key)
 		return nil, false
 	}
-	return item.value, ok
+	s.lfu.touch(key)
+	return item.value, true
 }
 
 func (s *store) set(key uint64, value interface{}, ttl time.Duration) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
+	s.lfu.touch(key)
 	item, ok := s.data[key]
 	var expiredAt int64
 	if ttl != 0 {
@@ -63,6 +69,7 @@ func (s *store) del(key uint64) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	// TODO: improve GC overhead for this operation
+	s.lfu.del(key)
 	delete(s.data, key)
 }
 
@@ -70,6 +77,10 @@ func (s *store) clear() {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	// TODO: improve GC overhead for this operation
+	for k := range s.data {
+		s.lfu.del(k)
+		delete(s.data, k)
+	}
 	s.data = make(map[uint64]storeItem)
 }
 
@@ -77,7 +88,7 @@ func (s *store) getMany(mapItems map[uint64]interface{}) {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 	now := time.Now().Unix()
-	for key, _ := range mapItems {
+	for key := range mapItems {
 		var item storeItem
 		var ok bool
 		if item, ok = s.data[key]; !ok {
@@ -85,10 +96,11 @@ func (s *store) getMany(mapItems map[uint64]interface{}) {
 			continue
 		}
 		if item.expiredAt > 0 && item.expiredAt < now {
-			s.expireChan <- key
+			s.lfu.del(key)
 			mapItems[key] = nil
 			continue
 		}
+		s.lfu.touch(key)
 		mapItems[key] = s.data[key].value
 	}
 }
